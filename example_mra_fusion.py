@@ -32,21 +32,21 @@ def mra_fusion_simple(image, wavelet='db4', level=3):
                       transform='swt2', mode='periodization')
 
     # Estrai i dettagli
-    # NOTA: In SWT, ogni livello successivo cattura frequenze più basse
+    # IMPORTANTE: mra2() restituisce coefficienti in ordine DECRESCENTE
     # coeffs[0] = approssimazione (non usata)
-    # coeffs[1] = (H1, V1, D1) - dettagli FINI (alte frequenze, livello 1)
-    # coeffs[2] = (H2, V2, D2) - dettagli MEDI (medie frequenze, livello 2)
-    # coeffs[3] = (H3, V3, D3) - dettagli GROSSI (basse frequenze, livello 3)
+    # coeffs[1] = dettagli livello 3 (H3+V3+D3) - GROSSOLANI (basse freq)
+    # coeffs[2] = dettagli livello 2 (H2+V2+D2) - MEDI (medie freq)
+    # coeffs[3] = dettagli livello 1 (H1+V1+D1) - FINI (alte freq)
 
-    # Somma dettagli per ogni livello (CORRETTO: coeffs[1]=FINE, coeffs[3]=GROSSO)
-    H1, V1, D1 = coeffs[1]
-    R = H1 + V1 + D1  # Canale Rosso = dettagli FINI
+    # Somma dettagli per ogni livello
+    H3, V3, D3 = coeffs[1]  # Livello 3 (grossolano)
+    B = H3 + V3 + D3  # Canale Blu = H3+V3+D3 = dettagli GROSSI
 
-    H2, V2, D2 = coeffs[2]
-    G = H2 + V2 + D2  # Canale Verde = dettagli MEDI
+    H2, V2, D2 = coeffs[2]  # Livello 2 (medio)
+    G = H2 + V2 + D2  # Canale Verde = H2+V2+D2 = dettagli MEDI
 
-    H3, V3, D3 = coeffs[3]
-    B = H3 + V3 + D3  # Canale Blu = dettagli GROSSI
+    H1, V1, D1 = coeffs[3]  # Livello 1 (fine)
+    R = H1 + V1 + D1  # Canale Rosso = H1+V1+D1 = dettagli FINI
 
     # Normalizza nel range [0, 255]
     def norm(x):

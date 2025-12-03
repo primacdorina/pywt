@@ -6,18 +6,18 @@ Analisi Multi-Risoluzione (MRA) con Data Fusion per Scala
 
 Questo script esegue un'analisi multi-risoluzione usando PyWavelets per
 rilevare danni a diverse scale in immagini:
-- R (Rosso) = H1 + V1 + D1 → Dettagli FINI (crepe piccole, alte freq)
-- G (Verde) = H2 + V2 + D2 → Dettagli MEDI (danni medi, medie freq)
-- B (Blu)   = H3 + V3 + D3 → Dettagli GROSSI (crolli, basse freq)
+- R (Rosso) = H1 + V1 + D1 → Dettagli FINI (crepe piccole, alte freq) → coeffs[3]
+- G (Verde) = H2 + V2 + D2 → Dettagli MEDI (danni medi, medie freq) → coeffs[2]
+- B (Blu)   = H3 + V3 + D3 → Dettagli GROSSI (crolli, basse freq) → coeffs[1]
 
 Dove:
 - H = dettagli orizzontali
 - V = dettagli verticali
 - D = dettagli diagonali
-- 1, 2, 3 = livelli wavelet (1=fine/alte freq, 2=medio, 3=grosso/basse freq)
+- 1, 2, 3 = livelli wavelet decomposizione (1=fine, 2=medio, 3=grosso)
 
-Nella SWT (Stationary Wavelet Transform), ogni livello successivo cattura
-frequenze progressivamente più basse.
+IMPORTANTE: pywt.mra2() restituisce coefficienti in ordine DECRESCENTE:
+coeffs[1]=livello 3 (grosso), coeffs[2]=livello 2 (medio), coeffs[3]=livello 1 (fine)
 """
 
 import numpy as np
@@ -108,51 +108,52 @@ def apply_mra_fusion(image, wavelet='db4', level=3):
     B_channel = np.zeros((height, width), dtype=np.float64)
 
     # Dizionario per memorizzare le mappe di dettaglio
-    # NOTA: In SWT, ogni livello successivo cattura frequenze più basse
-    # coeffs[1] = H1+V1+D1 = dettagli FINI (alte frequenze, livello 1)
-    # coeffs[2] = H2+V2+D2 = dettagli MEDI (medie frequenze, livello 2)
-    # coeffs[3] = H3+V3+D3 = dettagli GROSSI (basse frequenze, livello 3)
+    # IMPORTANTE: mra2() restituisce coefficienti in ordine DECRESCENTE di dettaglio
+    # coeffs[1] = dettagli livello 3 (GROSSOLANI, basse freq) = H3+V3+D3
+    # coeffs[2] = dettagli livello 2 (MEDI, medie freq) = H2+V2+D2
+    # coeffs[3] = dettagli livello 1 (FINI, alte freq) = H1+V1+D1
     detail_maps = {
-        'fine': {'H': None, 'V': None, 'D': None, 'sum': None},       # coeffs[1]
-        'medium': {'H': None, 'V': None, 'D': None, 'sum': None},     # coeffs[2]
-        'coarse': {'H': None, 'V': None, 'D': None, 'sum': None}      # coeffs[3]
+        'fine': {'H': None, 'V': None, 'D': None, 'sum': None},       # coeffs[3] = livello 1
+        'medium': {'H': None, 'V': None, 'D': None, 'sum': None},     # coeffs[2] = livello 2
+        'coarse': {'H': None, 'V': None, 'D': None, 'sum': None}      # coeffs[1] = livello 3
     }
 
     # Estrai e combina i dettagli per ogni livello
-    # Livello 1 = alte freq (fine), Livello 2 = medie freq, Livello 3 = basse freq (grosso)
-    for i in range(1, min(4, len(mra_coeffs))):  # livelli 1, 2, 3
+    # mra2() restituisce in ordine: coeffs[1]=grosso, coeffs[2]=medio, coeffs[3]=fine
+    for i in range(1, min(4, len(mra_coeffs))):
         H, V, D = mra_coeffs[i]  # (Horizontal, Vertical, Diagonal)
 
-        print(f"  - coeffs[{i}]: Livello {i}, shapes = H:{H.shape}, V:{V.shape}, D:{D.shape}")
+        print(f"  - coeffs[{i}]: shapes = H:{H.shape}, V:{V.shape}, D:{D.shape}")
 
         # Somma dei dettagli per questo livello
         detail_sum = H + V + D
 
-        # Assegna ai canali RGB (CORRETTO: coeffs[1]=FINE, coeffs[2]=MEDIO, coeffs[3]=GROSSO)
+        # Assegna ai canali RGB
+        # ORDINE: coeffs[1]=GROSSO→B, coeffs[2]=MEDIO→G, coeffs[3]=FINE→R
         if i == 1:
-            # Livello 1 → Canale R (dettagli FINI - crepe piccole)
-            R_channel = detail_sum
-            detail_maps['fine']['H'] = H
-            detail_maps['fine']['V'] = V
-            detail_maps['fine']['D'] = D
-            detail_maps['fine']['sum'] = detail_sum
-            print(f"    → R channel (dettagli FINI): range [{R_channel.min():.3f}, {R_channel.max():.3f}]")
-        elif i == 2:
-            # Livello 2 → Canale G (dettagli MEDI - danni medi)
-            G_channel = detail_sum
-            detail_maps['medium']['H'] = H
-            detail_maps['medium']['V'] = V
-            detail_maps['medium']['D'] = D
-            detail_maps['medium']['sum'] = detail_sum
-            print(f"    → G channel (dettagli MEDI): range [{G_channel.min():.3f}, {G_channel.max():.3f}]")
-        elif i == 3:
-            # Livello 3 → Canale B (dettagli GROSSI - crolli)
+            # coeffs[1] = livello 3 = H3+V3+D3 → Canale B (dettagli GROSSI)
             B_channel = detail_sum
             detail_maps['coarse']['H'] = H
             detail_maps['coarse']['V'] = V
             detail_maps['coarse']['D'] = D
             detail_maps['coarse']['sum'] = detail_sum
-            print(f"    → B channel (dettagli GROSSI): range [{B_channel.min():.3f}, {B_channel.max():.3f}]")
+            print(f"    → B channel (H3+V3+D3, GROSSO): range [{B_channel.min():.3f}, {B_channel.max():.3f}]")
+        elif i == 2:
+            # coeffs[2] = livello 2 = H2+V2+D2 → Canale G (dettagli MEDI)
+            G_channel = detail_sum
+            detail_maps['medium']['H'] = H
+            detail_maps['medium']['V'] = V
+            detail_maps['medium']['D'] = D
+            detail_maps['medium']['sum'] = detail_sum
+            print(f"    → G channel (H2+V2+D2, MEDIO): range [{G_channel.min():.3f}, {G_channel.max():.3f}]")
+        elif i == 3:
+            # coeffs[3] = livello 1 = H1+V1+D1 → Canale R (dettagli FINI)
+            R_channel = detail_sum
+            detail_maps['fine']['H'] = H
+            detail_maps['fine']['V'] = V
+            detail_maps['fine']['D'] = D
+            detail_maps['fine']['sum'] = detail_sum
+            print(f"    → R channel (H1+V1+D1, FINE): range [{R_channel.min():.3f}, {R_channel.max():.3f}]")
 
     # Normalizza ogni canale indipendentemente
     R_norm = normalize_to_uint8(np.abs(R_channel))
@@ -211,9 +212,9 @@ def visualize_results(original_image, rgb_fused, detail_maps, save_path=None):
     axes[0, 4].axis('off')
 
     # Righe 1-3: Dettagli per ogni livello (H, V, D, Somma)
-    # ORDINE CORRETTO: Fine (R) coeffs[1], Medio (G) coeffs[2], Grosso (B) coeffs[3]
+    # ORDINE CORRETTO: coeffs[3]=fine(R), coeffs[2]=medio(G), coeffs[1]=grosso(B)
     levels = ['fine', 'medium', 'coarse']
-    level_names = ['FINE - coeffs[1] (R)', 'MEDIO - coeffs[2] (G)', 'GROSSO - coeffs[3] (B)']
+    level_names = ['FINE - H1+V1+D1 (R)', 'MEDIO - H2+V2+D2 (G)', 'GROSSO - H3+V3+D3 (B)']
 
     for row, (level, level_name) in enumerate(zip(levels, level_names), start=1):
         if detail_maps[level]['H'] is not None:

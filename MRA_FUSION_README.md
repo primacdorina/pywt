@@ -8,21 +8,21 @@ Questo progetto implementa un'analisi multi-risoluzione (MRA) usando PyWavelets 
 
 L'idea è sostituire i tradizionali canali RGB con informazioni di scala wavelet:
 
-- **R (Rosso)** = H1 + V1 + D1 → **Dettagli FINI** (crepe piccole, alte frequenze) - da `coeffs[1]`
+- **R (Rosso)** = H1 + V1 + D1 → **Dettagli FINI** (crepe piccole, alte frequenze) - da `coeffs[3]`
 - **G (Verde)** = H2 + V2 + D2 → **Dettagli MEDI** (danni medi, medie frequenze) - da `coeffs[2]`
-- **B (Blu)** = H3 + V3 + D3 → **Dettagli GROSSI** (crolli, basse frequenze) - da `coeffs[3]`
+- **B (Blu)** = H3 + V3 + D3 → **Dettagli GROSSI** (crolli, basse frequenze) - da `coeffs[1]`
 
 Dove:
 - **H** = dettagli orizzontali
 - **V** = dettagli verticali
 - **D** = dettagli diagonali
-- **1, 2, 3** = livelli di decomposizione wavelet
+- **1, 2, 3** = livelli di decomposizione wavelet (1=fine, 2=medio, 3=grosso)
 
-**NOTA IMPORTANTE**: Nella trasformata wavelet stazionaria (SWT), ogni livello successivo cattura frequenze più basse:
+**NOTA IMPORTANTE**: `pywt.mra2()` restituisce i coefficienti in ordine **DECRESCENTE** di dettaglio:
 - `coeffs[0]` = approssimazione (componente a bassa frequenza)
-- `coeffs[1]` = **Livello 1** = dettagli FINI (alte frequenze)
-- `coeffs[2]` = **Livello 2** = dettagli MEDI (medie frequenze)
-- `coeffs[3]` = **Livello 3** = dettagli GROSSI (basse frequenze)
+- `coeffs[1]` = dettagli **livello 3** (H3+V3+D3) = GROSSOLANI (basse frequenze)
+- `coeffs[2]` = dettagli **livello 2** (H2+V2+D2) = MEDI (medie frequenze)
+- `coeffs[3]` = dettagli **livello 1** (H1+V1+D1) = FINI (alte frequenze)
 
 ## 📁 File Forniti
 
