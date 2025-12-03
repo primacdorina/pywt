@@ -6,15 +6,18 @@ Analisi Multi-Risoluzione (MRA) con Data Fusion per Scala
 
 Questo script esegue un'analisi multi-risoluzione usando PyWavelets per
 rilevare danni a diverse scale in immagini:
-- R (Rosso) = H1 + V1 + D1 → Dettagli FINI (crepe piccole)
-- G (Verde) = H2 + V2 + D2 → Dettagli MEDI (danni medi)
-- B (Blu)   = H3 + V3 + D3 → Dettagli GROSSI (crolli)
+- R (Rosso) = H1 + V1 + D1 → Dettagli FINI (crepe piccole, alte freq)
+- G (Verde) = H2 + V2 + D2 → Dettagli MEDI (danni medi, medie freq)
+- B (Blu)   = H3 + V3 + D3 → Dettagli GROSSI (crolli, basse freq)
 
 Dove:
 - H = dettagli orizzontali
 - V = dettagli verticali
 - D = dettagli diagonali
-- 1, 2, 3 = livelli di scala wavelet
+- 1, 2, 3 = livelli wavelet (1=fine/alte freq, 2=medio, 3=grosso/basse freq)
+
+Nella SWT (Stationary Wavelet Transform), ogni livello successivo cattura
+frequenze progressivamente più basse.
 """
 
 import numpy as np
@@ -105,18 +108,18 @@ def apply_mra_fusion(image, wavelet='db4', level=3):
     B_channel = np.zeros((height, width), dtype=np.float64)
 
     # Dizionario per memorizzare le mappe di dettaglio
-    # NOTA: mra2() restituisce i livelli dal più grossolano al più fine
-    # coeffs[1] = dettagli GROSSI (basse frequenze)
-    # coeffs[2] = dettagli MEDI (medie frequenze)
-    # coeffs[3] = dettagli FINI (alte frequenze)
+    # NOTA: In SWT, ogni livello successivo cattura frequenze più basse
+    # coeffs[1] = H1+V1+D1 = dettagli FINI (alte frequenze, livello 1)
+    # coeffs[2] = H2+V2+D2 = dettagli MEDI (medie frequenze, livello 2)
+    # coeffs[3] = H3+V3+D3 = dettagli GROSSI (basse frequenze, livello 3)
     detail_maps = {
-        'fine': {'H': None, 'V': None, 'D': None, 'sum': None},       # coeffs[3]
+        'fine': {'H': None, 'V': None, 'D': None, 'sum': None},       # coeffs[1]
         'medium': {'H': None, 'V': None, 'D': None, 'sum': None},     # coeffs[2]
-        'coarse': {'H': None, 'V': None, 'D': None, 'sum': None}      # coeffs[1]
+        'coarse': {'H': None, 'V': None, 'D': None, 'sum': None}      # coeffs[3]
     }
 
     # Estrai e combina i dettagli per ogni livello
-    # IMPORTANTE: L'ordine è dal GROSSOLANO al FINE
+    # Livello 1 = alte freq (fine), Livello 2 = medie freq, Livello 3 = basse freq (grosso)
     for i in range(1, min(4, len(mra_coeffs))):  # livelli 1, 2, 3
         H, V, D = mra_coeffs[i]  # (Horizontal, Vertical, Diagonal)
 
@@ -125,15 +128,15 @@ def apply_mra_fusion(image, wavelet='db4', level=3):
         # Somma dei dettagli per questo livello
         detail_sum = H + V + D
 
-        # Assegna ai canali RGB (CORRETTO: coeffs[1]=GROSSO, coeffs[3]=FINE)
+        # Assegna ai canali RGB (CORRETTO: coeffs[1]=FINE, coeffs[2]=MEDIO, coeffs[3]=GROSSO)
         if i == 1:
-            # Livello 1 → Canale B (dettagli GROSSI - crolli)
-            B_channel = detail_sum
-            detail_maps['coarse']['H'] = H
-            detail_maps['coarse']['V'] = V
-            detail_maps['coarse']['D'] = D
-            detail_maps['coarse']['sum'] = detail_sum
-            print(f"    → B channel (dettagli GROSSI): range [{B_channel.min():.3f}, {B_channel.max():.3f}]")
+            # Livello 1 → Canale R (dettagli FINI - crepe piccole)
+            R_channel = detail_sum
+            detail_maps['fine']['H'] = H
+            detail_maps['fine']['V'] = V
+            detail_maps['fine']['D'] = D
+            detail_maps['fine']['sum'] = detail_sum
+            print(f"    → R channel (dettagli FINI): range [{R_channel.min():.3f}, {R_channel.max():.3f}]")
         elif i == 2:
             # Livello 2 → Canale G (dettagli MEDI - danni medi)
             G_channel = detail_sum
@@ -143,13 +146,13 @@ def apply_mra_fusion(image, wavelet='db4', level=3):
             detail_maps['medium']['sum'] = detail_sum
             print(f"    → G channel (dettagli MEDI): range [{G_channel.min():.3f}, {G_channel.max():.3f}]")
         elif i == 3:
-            # Livello 3 → Canale R (dettagli FINI - crepe piccole)
-            R_channel = detail_sum
-            detail_maps['fine']['H'] = H
-            detail_maps['fine']['V'] = V
-            detail_maps['fine']['D'] = D
-            detail_maps['fine']['sum'] = detail_sum
-            print(f"    → R channel (dettagli FINI): range [{R_channel.min():.3f}, {R_channel.max():.3f}]")
+            # Livello 3 → Canale B (dettagli GROSSI - crolli)
+            B_channel = detail_sum
+            detail_maps['coarse']['H'] = H
+            detail_maps['coarse']['V'] = V
+            detail_maps['coarse']['D'] = D
+            detail_maps['coarse']['sum'] = detail_sum
+            print(f"    → B channel (dettagli GROSSI): range [{B_channel.min():.3f}, {B_channel.max():.3f}]")
 
     # Normalizza ogni canale indipendentemente
     R_norm = normalize_to_uint8(np.abs(R_channel))
@@ -208,9 +211,9 @@ def visualize_results(original_image, rgb_fused, detail_maps, save_path=None):
     axes[0, 4].axis('off')
 
     # Righe 1-3: Dettagli per ogni livello (H, V, D, Somma)
-    # ORDINE CORRETTO: Fine (R), Medio (G), Grosso (B)
+    # ORDINE CORRETTO: Fine (R) coeffs[1], Medio (G) coeffs[2], Grosso (B) coeffs[3]
     levels = ['fine', 'medium', 'coarse']
-    level_names = ['FINE - coeffs[3] (R)', 'MEDIO - coeffs[2] (G)', 'GROSSO - coeffs[1] (B)']
+    level_names = ['FINE - coeffs[1] (R)', 'MEDIO - coeffs[2] (G)', 'GROSSO - coeffs[3] (B)']
 
     for row, (level, level_name) in enumerate(zip(levels, level_names), start=1):
         if detail_maps[level]['H'] is not None:

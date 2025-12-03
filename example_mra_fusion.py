@@ -5,6 +5,11 @@ Esempio Semplice di MRA Data Fusion
 ====================================
 
 Script di esempio rapido per testare l'analisi MRA con una singola immagine.
+
+Mappatura RGB:
+- R (Rosso) = H1 + V1 + D1 → Dettagli FINI (alte frequenze)
+- G (Verde) = H2 + V2 + D2 → Dettagli MEDI (medie frequenze)
+- B (Blu)   = H3 + V3 + D3 → Dettagli GROSSI (basse frequenze)
 """
 
 import numpy as np
@@ -27,21 +32,21 @@ def mra_fusion_simple(image, wavelet='db4', level=3):
                       transform='swt2', mode='periodization')
 
     # Estrai i dettagli
-    # NOTA: mra2() restituisce i livelli dal più grossolano al più fine
+    # NOTA: In SWT, ogni livello successivo cattura frequenze più basse
     # coeffs[0] = approssimazione (non usata)
-    # coeffs[1] = (H1, V1, D1) - dettagli GROSSI (basse frequenze)
-    # coeffs[2] = (H2, V2, D2) - dettagli MEDI (medie frequenze)
-    # coeffs[3] = (H3, V3, D3) - dettagli FINI (alte frequenze)
+    # coeffs[1] = (H1, V1, D1) - dettagli FINI (alte frequenze, livello 1)
+    # coeffs[2] = (H2, V2, D2) - dettagli MEDI (medie frequenze, livello 2)
+    # coeffs[3] = (H3, V3, D3) - dettagli GROSSI (basse frequenze, livello 3)
 
-    # Somma dettagli per ogni livello (CORRETTO: coeffs[1]=GROSSO, coeffs[3]=FINE)
+    # Somma dettagli per ogni livello (CORRETTO: coeffs[1]=FINE, coeffs[3]=GROSSO)
     H1, V1, D1 = coeffs[1]
-    B = H1 + V1 + D1  # Canale Blu = dettagli GROSSI
+    R = H1 + V1 + D1  # Canale Rosso = dettagli FINI
 
     H2, V2, D2 = coeffs[2]
     G = H2 + V2 + D2  # Canale Verde = dettagli MEDI
 
     H3, V3, D3 = coeffs[3]
-    R = H3 + V3 + D3  # Canale Rosso = dettagli FINI
+    B = H3 + V3 + D3  # Canale Blu = dettagli GROSSI
 
     # Normalizza nel range [0, 255]
     def norm(x):
