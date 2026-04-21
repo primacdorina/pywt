@@ -126,6 +126,15 @@ def calculate_fdd_async(data_matrix, timestamp, db_session_maker, q_mqtt, plot_d
         else:
             fn1, fn2, fn3 = 0.0, 0.0, 0.0
 
+        # Output frequenze dominanti
+        print(f"\n{'='*45}")
+        print(f"  FDD — Frequenze Dominanti  [{timestamp}]")
+        print(f"{'='*45}")
+        print(f"  fn1 = {fn1:.3f} Hz" if fn1 > 0 else "  fn1 = non identificata")
+        print(f"  fn2 = {fn2:.3f} Hz" if fn2 > 0 else "  fn2 = non identificata")
+        print(f"  fn3 = {fn3:.3f} Hz" if fn3 > 0 else "  fn3 = non identificata")
+        print(f"{'='*45}\n")
+
         # ── Step 4: Plot ────────────────────────────────────────────────────────────
         if ENABLE_PLOTS:
             fdd_plot_dir = os.path.join(plot_dir, "FDD_System")
