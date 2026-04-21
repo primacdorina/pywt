@@ -47,45 +47,82 @@ seconds_since_last_fdd = 0
 
 def calculate_fdd_async(data_matrix, timestamp, db_session_maker, q_mqtt, plot_dir):
     """
-    FDD: Frequency Domain Decomposition (Brincker et al., 2000).
+    FDD - Frequency Domain Decomposition (Brincker et al., 2000).
+
+    Input:
+        data_matrix: shape (n_campioni, n_sensori) — colonne = sensori accel sincroni
 
     Procedura:
-    1. Costruisce la matrice spettrale Syy[i,j,f]: ogni elemento e' la
-       Cross-PSD tra il sensore i e il sensore j. La Cross-PSD e' come
-       una PSD classica (Welch) ma tra DUE segnali diversi: misura quanta
-       energia condividono i due sensori frequenza per frequenza.
-       Quando i==j si riduce alla normale auto-PSD del sensore i.
-    2. Ad ogni riga di frequenza, decompone Syy con SVD:
-       Syy(f) = U * diag(sigma) * V^H
-       I valori singolari sigma1 >= sigma2 >= ... rappresentano la
-       "potenza modale" a quella frequenza.
-    3. I picchi di sigma1(f) corrispondono alle frequenze naturali della struttura.
+    ┌─────────────────────────────────────────────────────────────────┐
+    │ STEP 1 — Matrice spettrale Syy                                  │
+    │   Syy e' una matrice (n_sensori x n_sensori) per ogni freq f.   │
+    │   Ogni elemento Syy[i,j,f] e' la Cross-PSD tra sensore i e j:  │
+    │     - se i == j  →  auto-PSD del sensore i  (come Welch)        │
+    │     - se i != j  →  cross-PSD tra i e j  (correlazione spaziale)│
+    │   La cross-PSD misura quanta energia i due sensori condividono   │
+    │   a quella frequenza. E' calcolata con signal.csd, che usa lo   │
+    │   stesso algoritmo di Welch (blocchi sovrapposti + media).      │
+    │                                                                  │
+    │   IMPORTANTE: signal.csd viene chiamato 9x9=81 volte (una per   │
+    │   coppia), ciascuna restituisce l'intero array di frequenze.    │
+    │   Cosi' si calcola una sola volta tutto, non frequenza per freq.│
+    ├─────────────────────────────────────────────────────────────────┤
+    │ STEP 2 — SVD per ogni frequenza                                  │
+    │   Per ogni riga di frequenza k si fa:                           │
+    │       Syy[:,:,k] = U * diag(sigma) * V^H                       │
+    │   sigma[0] >= sigma[1] >= sigma[2] ...                          │
+    │   sigma[0] (sigma1) rappresenta la "potenza del modo dominante" │
+    │   a quella frequenza.                                            │
+    ├─────────────────────────────────────────────────────────────────┤
+    │ STEP 3 — Peak picking                                            │
+    │   I picchi di sigma1(f) corrispondono alle frequenze naturali.  │
+    │   Si normalizza sigma1 e si cercano i picchi piu' prominenti.   │
+    └─────────────────────────────────────────────────────────────────┘
     """
     logger.info(f"Avvio calcolo FDD asincrono: blocco terminante al {timestamp}")
     session = db_session_maker()
     try:
         n_campioni, n_sensori = data_matrix.shape
         nperseg = 1024
+        noverlap = nperseg // 2  # 50% overlap, standard Welch
 
-        # 1. Asse delle frequenze (comune a tutte le coppie di sensori)
+        # ── STEP 1: Costruzione matrice spettrale Syy ──────────────────────
+        # signal.csd(x, y) = Cross-PSD tra x e y, calcolata con metodo Welch:
+        #   - divide i segnali in blocchi di nperseg campioni
+        #   - applica una finestra di Hann su ogni blocco
+        #   - calcola la FFT incrociata di ogni blocco
+        #   - media i risultati → stima robusta della Cross-PSD
+        # Restituisce: (frequenze, Sxy) entrambi array di lunghezza nperseg//2 + 1
+        #
+        # Chiamiamo csd UNA VOLTA per ogni coppia (i,j) e salviamo tutto Syy.
+        # NON chiamare csd dentro il loop sulle frequenze: sarebbe 513x81 chiamate
+        # invece di 81, ricalcolando la stessa cosa migliaia di volte.
+
         frequenze, _ = signal.csd(data_matrix[:, 0], data_matrix[:, 0],
-                                  fs=FS_ACCEL, nperseg=nperseg)
+                                  fs=FS_ACCEL, nperseg=nperseg, noverlap=noverlap)
         n_freq = len(frequenze)
 
-        # 2. Costruzione matrice spettrale Syy[sensore_i, sensore_j, frequenza]
-        #    signal.csd(x, y) calcola la Cross-PSD tra il segnale x e il segnale y
-        #    usando il metodo di Welch (media su blocchi sovrapposti con finestra)
+        # Syy[i, j, k] = Cross-PSD tra sensore i e sensore j alla frequenza k
         Syy = np.zeros((n_sensori, n_sensori, n_freq), dtype=complex)
         for i in range(n_sensori):
             for j in range(n_sensori):
                 _, Syy[i, j, :] = signal.csd(data_matrix[:, i], data_matrix[:, j],
-                                              fs=FS_ACCEL, nperseg=nperseg)
+                                              fs=FS_ACCEL, nperseg=nperseg, noverlap=noverlap)
 
-        # 3. SVD di Syy ad ogni frequenza -> estrazione dei valori singolari
-        #    sigma1(f) >= sigma2(f) >= sigma3(f) >= ...
-        sigma1 = np.zeros(n_freq)
-        sigma2 = np.zeros(n_freq)
-        sigma3 = np.zeros(n_freq)
+        # ── STEP 2: SVD di Syy ad ogni frequenza ──────────────────────────
+        # Per ogni frequenza k, Syy[:,:,k] e' una matrice 9x9 complessa.
+        # np.linalg.svd restituisce U, sigma, Vh dove:
+        #   - U: vettori singolari sinistri (approssimano le forme modali)
+        #   - sigma: valori singolari in ordine decrescente
+        #   - Vh: vettori singolari destri (coniugati trasposti)
+        # sigma[0] e' il piu' grande: indica quanto "forte" e' il modo dominante
+        # a quella frequenza. Se a f=2.3 Hz la struttura ha un modo proprio,
+        # sigma[0] avra' un picco netto a 2.3 Hz.
+
+        sigma1 = np.zeros(n_freq)  # primo valore singolare (modo dominante)
+        sigma2 = np.zeros(n_freq)  # secondo (modo secondario)
+        sigma3 = np.zeros(n_freq)  # terzo
+
         for k in range(n_freq):
             _, valori_singolari, _ = np.linalg.svd(Syy[:, :, k])
             sigma1[k] = valori_singolari[0]
@@ -94,17 +131,22 @@ def calculate_fdd_async(data_matrix, timestamp, db_session_maker, q_mqtt, plot_d
             if n_sensori > 2:
                 sigma3[k] = valori_singolari[2]
 
-        # 4. Peak picking su sigma1 nella banda strutturale di interesse [0.1 - 25 Hz]
+        # ── STEP 3: Peak picking su sigma1 ────────────────────────────────
+        # Banda strutturale di interesse: 0.1 Hz (esclude deriva DC) - 25 Hz
         banda_mask = (frequenze >= 0.1) & (frequenze <= 25.0)
-        freq_banda = frequenze[banda_mask]
+        freq_banda  = frequenze[banda_mask]
         sigma1_banda = sigma1[banda_mask]
 
-        # Cerca picchi: altezza minima = 10% del massimo, distanza minima = 5 bin
-        indici_picchi, _ = signal.find_peaks(sigma1_banda,
-                                             height=np.max(sigma1_banda) * 0.1,
-                                             distance=5)
+        # Normalizza sigma1 tra 0 e 1 per rendere la soglia indipendente
+        # dall'ampiezza assoluta (che dipende dall'intensita' del rumore ambientale)
+        sigma1_norm = sigma1_banda / (np.max(sigma1_banda) + 1e-10)
 
-        # Ordina per ampiezza decrescente, prendi le prime 3 frequenze naturali
+        # Cerca picchi: altezza minima 30% del massimo, almeno 10 bin di distanza
+        # (a nperseg=1024 e fs=200 Hz, 1 bin = 200/1024 ≈ 0.2 Hz → 10 bin ≈ 2 Hz min tra modi)
+        indici_picchi, _ = signal.find_peaks(sigma1_norm, height=0.3, distance=10)
+
+        # Ordina i picchi per ampiezza di sigma1 (non normalizzata) decrescente
+        # e prendi le prime 3 frequenze naturali fn1, fn2, fn3
         if len(indici_picchi) > 0:
             picchi_ordinati = indici_picchi[np.argsort(sigma1_banda[indici_picchi])[::-1]]
             fn1 = float(freq_banda[picchi_ordinati[0]]) if len(picchi_ordinati) > 0 else 0.0
@@ -113,7 +155,7 @@ def calculate_fdd_async(data_matrix, timestamp, db_session_maker, q_mqtt, plot_d
         else:
             fn1, fn2, fn3 = 0.0, 0.0, 0.0
 
-        # 5. Salvataggio Database
+        # ── Salvataggio Database ───────────────────────────────────────────
         record = FDDData(
             timestamp=timestamp,
             mode_1_freq=fn1, mode_2_freq=fn2, mode_3_freq=fn3
@@ -121,20 +163,23 @@ def calculate_fdd_async(data_matrix, timestamp, db_session_maker, q_mqtt, plot_d
         session.add(record)
         session.commit()
 
-        # 6. Plot: curve dei valori singolari + linee verticali sui modi identificati
+        # ── Plot ───────────────────────────────────────────────────────────
+        # Grafico in scala logaritmica (semilogy):
+        #   - le curve sigma1, sigma2, sigma3 mostrano la "potenza modale"
+        #   - i picchi netti di sigma1 sono le frequenze naturali
+        #   - sigma2 e sigma3 aiutano a vedere se un picco e' un modo reale
+        #     (sigma1 picco isolato) o una biforcazione (sigma1 e sigma2 picco insieme)
+        #   - le linee verticali tratteggiate marcano fn1, fn2, fn3 identificate
         if ENABLE_PLOTS:
             fdd_plot_dir = os.path.join(plot_dir, "FDD_System")
             ensure_dir(fdd_plot_dir)
             plot_path = os.path.join(fdd_plot_dir, f"{timestamp}_fdd_{FDD_DURATION_SEC}s.png")
 
             plt.figure(figsize=(12, 6))
-            plt.semilogy(freq_banda, sigma1_banda, label='sigma1 (1° val. singolare)', color='blue')
-            if np.any(sigma2[banda_mask] > 0):
-                plt.semilogy(freq_banda, sigma2[banda_mask], label='sigma2 (2° val. singolare)', color='orange', alpha=0.7)
-            if np.any(sigma3[banda_mask] > 0):
-                plt.semilogy(freq_banda, sigma3[banda_mask], label='sigma3 (3° val. singolare)', color='green', alpha=0.5)
+            plt.semilogy(freq_banda, sigma1_banda,          label='σ1 - modo dominante',   color='blue')
+            plt.semilogy(freq_banda, sigma2[banda_mask],    label='σ2 - modo secondario',  color='orange', alpha=0.7)
+            plt.semilogy(freq_banda, sigma3[banda_mask],    label='σ3 - modo terziario',   color='green',  alpha=0.5)
 
-            # Linee verticali sulle frequenze naturali identificate
             for freq_nat, etichetta, colore in [
                 (fn1, f'fn1 = {fn1:.2f} Hz', 'red'),
                 (fn2, f'fn2 = {fn2:.2f} Hz', 'purple'),
@@ -143,7 +188,7 @@ def calculate_fdd_async(data_matrix, timestamp, db_session_maker, q_mqtt, plot_d
                 if freq_nat > 0:
                     plt.axvline(x=freq_nat, linestyle='--', color=colore, alpha=0.8, label=etichetta)
 
-            plt.title(f"FDD - Matrice Spettrale Syy - Window: {FDD_DURATION_SEC}s - {timestamp}")
+            plt.title(f"FDD — Valori Singolari di Syy | Window: {FDD_DURATION_SEC}s | {timestamp}")
             plt.xlabel("Frequenza [Hz]")
             plt.ylabel("Valori Singolari (scala log)")
             plt.legend()
