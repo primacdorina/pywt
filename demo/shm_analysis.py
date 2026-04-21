@@ -47,95 +47,105 @@ seconds_since_last_fdd = 0
 
 def calculate_fdd_async(data_matrix, timestamp, db_session_maker, q_mqtt, plot_dir):
     """
-    FDD: Frequency Domain Decomposition.
-    1. Calcola la CPSD matrix per ogni coppia di canali
-    2. Esegue SVD sulla CPSD matrix ad ogni frequenza
-    3. I picchi del primo singular value indicano le frequenze naturali
+    FDD: Frequency Domain Decomposition (Brincker et al., 2000).
+
+    Procedura:
+    1. Costruisce la matrice spettrale Syy[i,j,f]: ogni elemento e' la
+       Cross-PSD tra il sensore i e il sensore j. La Cross-PSD e' come
+       una PSD classica (Welch) ma tra DUE segnali diversi: misura quanta
+       energia condividono i due sensori frequenza per frequenza.
+       Quando i==j si riduce alla normale auto-PSD del sensore i.
+    2. Ad ogni riga di frequenza, decompone Syy con SVD:
+       Syy(f) = U * diag(sigma) * V^H
+       I valori singolari sigma1 >= sigma2 >= ... rappresentano la
+       "potenza modale" a quella frequenza.
+    3. I picchi di sigma1(f) corrispondono alle frequenze naturali della struttura.
     """
     logger.info(f"Avvio calcolo FDD asincrono: blocco terminante al {timestamp}")
     session = db_session_maker()
     try:
-        n_samples, n_channels = data_matrix.shape
+        n_campioni, n_sensori = data_matrix.shape
         nperseg = 1024
 
-        # 1. Calcolo delle frequenze (asse comune)
-        f, _ = signal.csd(data_matrix[:, 0], data_matrix[:, 0], fs=FS_ACCEL, nperseg=nperseg)
-        n_freqs = len(f)
+        # 1. Asse delle frequenze (comune a tutte le coppie di sensori)
+        frequenze, _ = signal.csd(data_matrix[:, 0], data_matrix[:, 0],
+                                  fs=FS_ACCEL, nperseg=nperseg)
+        n_freq = len(frequenze)
 
-        # 2. Costruzione della CPSD matrix G[i, j, k]:
-        #    CSD tra canale i e canale j alla frequenza k
-        G = np.zeros((n_channels, n_channels, n_freqs), dtype=complex)
-        for i in range(n_channels):
-            for j in range(n_channels):
-                _, G[i, j, :] = signal.csd(data_matrix[:, i], data_matrix[:, j],
-                                            fs=FS_ACCEL, nperseg=nperseg)
+        # 2. Costruzione matrice spettrale Syy[sensore_i, sensore_j, frequenza]
+        #    signal.csd(x, y) calcola la Cross-PSD tra il segnale x e il segnale y
+        #    usando il metodo di Welch (media su blocchi sovrapposti con finestra)
+        Syy = np.zeros((n_sensori, n_sensori, n_freq), dtype=complex)
+        for i in range(n_sensori):
+            for j in range(n_sensori):
+                _, Syy[i, j, :] = signal.csd(data_matrix[:, i], data_matrix[:, j],
+                                              fs=FS_ACCEL, nperseg=nperseg)
 
-        # 3. SVD della CPSD matrix ad ogni frequenza
-        #    I singular values S[0] >= S[1] >= S[2] ... per ogni frequenza
-        s1 = np.zeros(n_freqs)
-        s2 = np.zeros(n_freqs)
-        s3 = np.zeros(n_freqs)
-        for k in range(n_freqs):
-            _, S, _ = np.linalg.svd(G[:, :, k])
-            s1[k] = S[0]
-            if n_channels > 1:
-                s2[k] = S[1]
-            if n_channels > 2:
-                s3[k] = S[2]
+        # 3. SVD di Syy ad ogni frequenza -> estrazione dei valori singolari
+        #    sigma1(f) >= sigma2(f) >= sigma3(f) >= ...
+        sigma1 = np.zeros(n_freq)
+        sigma2 = np.zeros(n_freq)
+        sigma3 = np.zeros(n_freq)
+        for k in range(n_freq):
+            _, valori_singolari, _ = np.linalg.svd(Syy[:, :, k])
+            sigma1[k] = valori_singolari[0]
+            if n_sensori > 1:
+                sigma2[k] = valori_singolari[1]
+            if n_sensori > 2:
+                sigma3[k] = valori_singolari[2]
 
-        # 4. Peak picking sul primo singular value nella banda di interesse
-        freq_min, freq_max = 0.1, 25.0
-        band = (f >= freq_min) & (f <= freq_max)
-        f_band = f[band]
-        s1_band = s1[band]
+        # 4. Peak picking su sigma1 nella banda strutturale di interesse [0.1 - 25 Hz]
+        banda_mask = (frequenze >= 0.1) & (frequenze <= 25.0)
+        freq_banda = frequenze[banda_mask]
+        sigma1_banda = sigma1[banda_mask]
 
-        # Trova picchi: altezza minima = 10% del massimo, distanza minima = 5 bins
-        peaks, _ = signal.find_peaks(s1_band,
-                                     height=np.max(s1_band) * 0.1,
-                                     distance=5)
+        # Cerca picchi: altezza minima = 10% del massimo, distanza minima = 5 bin
+        indici_picchi, _ = signal.find_peaks(sigma1_banda,
+                                             height=np.max(sigma1_banda) * 0.1,
+                                             distance=5)
 
-        # Ordina i picchi per ampiezza (decrescente) e prendi i primi 3
-        if len(peaks) > 0:
-            peaks_sorted = peaks[np.argsort(s1_band[peaks])[::-1]]
-            mode_1 = float(f_band[peaks_sorted[0]]) if len(peaks_sorted) > 0 else 0.0
-            mode_2 = float(f_band[peaks_sorted[1]]) if len(peaks_sorted) > 1 else 0.0
-            mode_3 = float(f_band[peaks_sorted[2]]) if len(peaks_sorted) > 2 else 0.0
+        # Ordina per ampiezza decrescente, prendi le prime 3 frequenze naturali
+        if len(indici_picchi) > 0:
+            picchi_ordinati = indici_picchi[np.argsort(sigma1_banda[indici_picchi])[::-1]]
+            fn1 = float(freq_banda[picchi_ordinati[0]]) if len(picchi_ordinati) > 0 else 0.0
+            fn2 = float(freq_banda[picchi_ordinati[1]]) if len(picchi_ordinati) > 1 else 0.0
+            fn3 = float(freq_banda[picchi_ordinati[2]]) if len(picchi_ordinati) > 2 else 0.0
         else:
-            mode_1, mode_2, mode_3 = 0.0, 0.0, 0.0
+            fn1, fn2, fn3 = 0.0, 0.0, 0.0
 
         # 5. Salvataggio Database
         record = FDDData(
             timestamp=timestamp,
-            mode_1_freq=mode_1, mode_2_freq=mode_2, mode_3_freq=mode_3
+            mode_1_freq=fn1, mode_2_freq=fn2, mode_3_freq=fn3
         )
         session.add(record)
         session.commit()
 
-        # 6. Plotting FDD
+        # 6. Plot: curve dei valori singolari + linee verticali sui modi identificati
         if ENABLE_PLOTS:
             fdd_plot_dir = os.path.join(plot_dir, "FDD_System")
             ensure_dir(fdd_plot_dir)
             plot_path = os.path.join(fdd_plot_dir, f"{timestamp}_fdd_{FDD_DURATION_SEC}s.png")
 
             plt.figure(figsize=(12, 6))
-            plt.semilogy(f_band, s1_band, label='1st Singular Value (S1)', color='blue')
-            if np.any(s2[band] > 0):
-                plt.semilogy(f_band, s2[band], label='2nd Singular Value (S2)', color='orange', alpha=0.7)
-            if np.any(s3[band] > 0):
-                plt.semilogy(f_band, s3[band], label='3rd Singular Value (S3)', color='green', alpha=0.5)
+            plt.semilogy(freq_banda, sigma1_banda, label='sigma1 (1° val. singolare)', color='blue')
+            if np.any(sigma2[banda_mask] > 0):
+                plt.semilogy(freq_banda, sigma2[banda_mask], label='sigma2 (2° val. singolare)', color='orange', alpha=0.7)
+            if np.any(sigma3[banda_mask] > 0):
+                plt.semilogy(freq_banda, sigma3[banda_mask], label='sigma3 (3° val. singolare)', color='green', alpha=0.5)
 
-            # Marca le frequenze naturali identificate
-            colors_mode = ['red', 'purple', 'brown']
-            for idx, (mode_label, mode_freq) in enumerate(
-                [('Mode 1', mode_1), ('Mode 2', mode_2), ('Mode 3', mode_3)]
-            ):
-                if mode_freq > 0:
-                    plt.axvline(x=mode_freq, linestyle='--', color=colors_mode[idx], alpha=0.8,
-                                label=f'{mode_label}: {mode_freq:.2f} Hz')
+            # Linee verticali sulle frequenze naturali identificate
+            for freq_nat, etichetta, colore in [
+                (fn1, f'fn1 = {fn1:.2f} Hz', 'red'),
+                (fn2, f'fn2 = {fn2:.2f} Hz', 'purple'),
+                (fn3, f'fn3 = {fn3:.2f} Hz', 'brown'),
+            ]:
+                if freq_nat > 0:
+                    plt.axvline(x=freq_nat, linestyle='--', color=colore, alpha=0.8, label=etichetta)
 
-            plt.title(f"FDD Analysis - Window: {FDD_DURATION_SEC}s - {timestamp}")
-            plt.xlabel("Frequency [Hz]")
-            plt.ylabel("Magnitude")
+            plt.title(f"FDD - Matrice Spettrale Syy - Window: {FDD_DURATION_SEC}s - {timestamp}")
+            plt.xlabel("Frequenza [Hz]")
+            plt.ylabel("Valori Singolari (scala log)")
             plt.legend()
             plt.grid(True, which='both', alpha=0.3)
             plt.tight_layout()
@@ -145,9 +155,9 @@ def calculate_fdd_async(data_matrix, timestamp, db_session_maker, q_mqtt, plot_d
         q_mqtt.put({
             "type": "FDD",
             "timestamp": timestamp,
-            "mode_1_hz": mode_1, "mode_2_hz": mode_2, "mode_3_hz": mode_3
+            "mode_1_hz": fn1, "mode_2_hz": fn2, "mode_3_hz": fn3
         })
-        logger.info(f"FDD completata: Mode1={mode_1:.2f}Hz, Mode2={mode_2:.2f}Hz, Mode3={mode_3:.2f}Hz")
+        logger.info(f"FDD completata: fn1={fn1:.2f}Hz, fn2={fn2:.2f}Hz, fn3={fn3:.2f}Hz")
 
     except Exception as e:
         logger.error(f"Errore durante FDD: {e}")
