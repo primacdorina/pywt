@@ -52,7 +52,7 @@ def calculate_fdd_async(data_matrix, timestamp, db_session_maker, q_mqtt, plot_d
 
     SCALETTA:
 
-      Step 1 — Costruzione matrice spettrale S_xx(f)
+      Step 1 - Costruzione matrice spettrale S_xx(f)
                S_xx[i,j,f] = Cross-PSD tra sensore i e sensore j alla frequenza f.
                signal.csd fa Welch tra due segnali:
                  i==j -> auto-PSD del sensore i
@@ -69,17 +69,17 @@ def calculate_fdd_async(data_matrix, timestamp, db_session_maker, q_mqtt, plot_d
                Quando x == y il passo 4 diventa X_k * conj(X_k) = |X_k|^2
                che e identico a signal.welch.
 
-      Step 2 — SVD di S_xx ad ogni frequenza
+      Step 2 - SVD di S_xx ad ogni frequenza
                S_xx(f) = U * diag(sigma) * V^H
                sigma_1(f) = primo valore singolare.
                I picchi di sigma_1(f) sono le frequenze dominanti della struttura.
 
-      Step 3 — Peak picking su sigma_1(f)
+      Step 3 - Peak picking su sigma_1(f)
                Trova i picchi di sigma_1, salva le prime 3 frequenze dominanti.
 
-      Step 4 — Plot di sigma_1(f) con picchi e frequenze dominanti evidenziati.
+      Step 4 - Plot di sigma_1(f) con picchi e frequenze dominanti evidenziati.
 
-      Step 5 — Salvataggio DB e invio MQTT.
+      Step 5 - Salvataggio DB e invio MQTT.
     """
     logger.info(f"Avvio calcolo FDD asincrono: blocco terminante al {timestamp}")
     session = db_session_maker()
@@ -87,8 +87,8 @@ def calculate_fdd_async(data_matrix, timestamp, db_session_maker, q_mqtt, plot_d
         n_campioni, n_sensori = data_matrix.shape
         nperseg = 1024
 
-        # ── Step 1: Costruzione matrice spettrale S_xx(f) ──────────────────────────
-        # Asse delle frequenze: fs/nperseg = 200/1024 ≈ 0.2 Hz per bin, da 0 a 100 Hz (Nyquist)
+        # Step 1: Costruzione matrice spettrale S_xx(f)
+        # Asse delle frequenze: fs/nperseg = 200/1024 ~ 0.2 Hz per bin, da 0 a 100 Hz (Nyquist)
         f = np.fft.rfftfreq(nperseg, d=1/FS_ACCEL)
         n_freq = len(f)
 
@@ -102,7 +102,7 @@ def calculate_fdd_async(data_matrix, timestamp, db_session_maker, q_mqtt, plot_d
                 _, S_xx[i, j, :] = signal.csd(data_matrix[:, i], data_matrix[:, j],
                                                fs=FS_ACCEL, nperseg=nperseg)
 
-        # ── Step 2: SVD di S_xx ad ogni frequenza ──────────────────────────────────
+        # Step 2: SVD di S_xx ad ogni frequenza
         # Per ogni frequenza k, S_xx[:,:,k] e una matrice 9x9 complessa.
         # La SVD restituisce i valori singolari in ordine decrescente:
         # sigma_1[k] e il valore piu grande -> rappresenta il modo dominante a f[k]
@@ -111,10 +111,10 @@ def calculate_fdd_async(data_matrix, timestamp, db_session_maker, q_mqtt, plot_d
             _, sigma, _ = np.linalg.svd(S_xx[:, :, k])
             sigma_1[k] = sigma[0]
 
-        # ── Step 3: Peak picking su sigma_1 ────────────────────────────────────────
+        # Step 3: Peak picking su sigma_1
         # I picchi di sigma_1(f) corrispondono alle frequenze dominanti della struttura.
         # height=0.3 -> considera solo picchi almeno al 30% del massimo
-        # distance=10 -> almeno 10 bin di distanza tra picchi (≈ 2 Hz a nperseg=1024, fs=200)
+        # distance=10 -> almeno 10 bin di distanza tra picchi (~2 Hz a nperseg=1024, fs=200)
         picchi, _ = signal.find_peaks(sigma_1, height=np.max(sigma_1) * 0.3, distance=10)
 
         # Ordina i picchi per ampiezza decrescente e prendi le prime 3 frequenze dominanti
@@ -126,16 +126,16 @@ def calculate_fdd_async(data_matrix, timestamp, db_session_maker, q_mqtt, plot_d
         else:
             fn1, fn2, fn3 = 0.0, 0.0, 0.0
 
-        # Output frequenze dominanti
-        print(f"\n{'='*45}")
-        print(f"  FDD — Frequenze Dominanti  [{timestamp}]")
-        print(f"{'='*45}")
+        # Output frequenze dominanti in console
+        print("=============================================")
+        print(f"  FDD - Frequenze Dominanti  [{timestamp}]")
+        print("=============================================")
         print(f"  fn1 = {fn1:.3f} Hz" if fn1 > 0 else "  fn1 = non identificata")
         print(f"  fn2 = {fn2:.3f} Hz" if fn2 > 0 else "  fn2 = non identificata")
         print(f"  fn3 = {fn3:.3f} Hz" if fn3 > 0 else "  fn3 = non identificata")
-        print(f"{'='*45}\n")
+        print("=============================================")
 
-        # ── Step 4: Plot ────────────────────────────────────────────────────────────
+        # Step 4: Plot
         if ENABLE_PLOTS:
             fdd_plot_dir = os.path.join(plot_dir, "FDD_System")
             ensure_dir(fdd_plot_dir)
@@ -143,7 +143,7 @@ def calculate_fdd_async(data_matrix, timestamp, db_session_maker, q_mqtt, plot_d
 
             plt.figure(figsize=(12, 6))
             # Curva sigma_1(f) completa
-            plt.semilogy(f, sigma_1, color='blue', label='σ₁(f)')
+            plt.semilogy(f, sigma_1, color='blue', label='sigma_1(f)')
             # Pallini rossi sui picchi identificati
             if len(picchi) > 0:
                 plt.semilogy(f[picchi], sigma_1[picchi], 'ro', markersize=6, label='Picchi')
@@ -152,16 +152,16 @@ def calculate_fdd_async(data_matrix, timestamp, db_session_maker, q_mqtt, plot_d
                 if fn > 0:
                     plt.axvline(x=fn, linestyle='--', alpha=0.7, label=etichetta)
 
-            plt.title(f"FDD — σ₁(f) | Window: {FDD_DURATION_SEC}s | {timestamp}")
+            plt.title(f"FDD - sigma_1(f) | Window: {FDD_DURATION_SEC}s | {timestamp}")
             plt.xlabel("Frequenza [Hz]")
-            plt.ylabel("σ₁(f) [scala log]")
+            plt.ylabel("sigma_1(f) [scala log]")
             plt.legend()
             plt.grid(True, which='both', alpha=0.3)
             plt.tight_layout()
             plt.savefig(plot_path)
             plt.close()
 
-        # ── Step 5: Salvataggio DB e MQTT ───────────────────────────────────────────
+        # Step 5: Salvataggio DB e MQTT
         session.add(FDDData(timestamp=timestamp, mode_1_freq=fn1, mode_2_freq=fn2, mode_3_freq=fn3))
         session.commit()
 
