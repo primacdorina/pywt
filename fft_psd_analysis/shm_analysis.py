@@ -92,15 +92,31 @@ FDD_SENSORS = ['A1', 'A2', 'A3', 'A4', 'A5', 'A6']
 
 # Banda di interesse strutturale: 1-95 Hz (esclude DC/drift e bordo Nyquist).
 
-# Esclusione esplicita della rete elettrica a 50 Hz dal peak picking.
-
-PREPROC_HP_CUTOFF   = 1.0        # Filtro passa-alto Butter ord. 4 (rimuove drift termico/gravita')
+PREPROC_HP_CUTOFF   = 1.0          # Filtro passa-alto Butter ord. 4 (rimuove drift termico/gravita')
 
 STRUCT_BAND         = (1.0, 95.0)  # Banda di ricerca picchi per FFT/PSD/FDD [Hz]
 
-MAINS_BAND          = (49.0, 51.0) # Banda da escludere (rete elettrica 50 Hz)
-
 NUM_PEAKS_REPORT    = 6            # Numero di modi candidati da loggare per FFT/PSD
+
+
+
+# --- Parametri Welch comuni a PSD (per-canale) e FDD (multivariato) ----------
+
+# Lo stesso nperseg in entrambi garantisce la stessa risoluzione frequenziale
+
+# df = fs / nperseg, quindi PSD per-canale e CSD/SVD della FDD sono confrontabili
+
+# bin per bin sull'asse delle frequenze.
+
+# A fs=200 Hz: nperseg=2048 -> segmento ~10.24 s, df ~ 0.098 Hz.
+
+#   PSD su 60 s con 50% overlap  -> ~10 medie
+
+#   FDD su 600 s con 50% overlap -> ~115 medie (alta stabilita')
+
+WELCH_NPERSEG       = 2048
+
+WELCH_OVERLAP_RATIO = 0.5
 
 # ==========================================
 
@@ -126,11 +142,9 @@ seconds_since_last_fdd = 0
 
 # Parametri per Analisi Modale (FDD via pyoma2)
 
-# nxseg=4096 a 200 Hz -> segmenti di ~20.5 s, df ~ 0.049 Hz.
+# nxseg uguale a WELCH_NPERSEG -> stessa df di PSD per confronto diretto.
 
-# Su 600 s di dati con 50% di overlap -> ~58 medie: stabile e ad alta risoluzione.
-
-FDD_NXSEG          = 4096
+FDD_NXSEG          = WELCH_NPERSEG
 
 FDD_FREQ_MIN_PICK  = STRUCT_BAND[0]   # Esclude DC e drift bassissimi
 
@@ -190,11 +204,11 @@ def _preprocess_signal(x, fs, hp_cutoff=PREPROC_HP_CUTOFF):
 
 def _find_structural_peaks(freq, magnitude, band=STRUCT_BAND,
 
-                           mains_band=MAINS_BAND, n_peaks=NUM_PEAKS_REPORT,
+                           n_peaks=NUM_PEAKS_REPORT,
 
                            prominence_ratio=0.02):
 
-    """Peak picking nella banda strutturale, esclude la rete elettrica.
+    """Peak picking nella banda strutturale.
 
 
 
@@ -209,8 +223,6 @@ def _find_structural_peaks(freq, magnitude, band=STRUCT_BAND,
     fmin, fmax = band
 
     mask = (freq >= fmin) & (freq <= fmax)
-
-    mask &= ~((freq >= mains_band[0]) & (freq <= mains_band[1]))
 
     f_band = freq[mask]
 
@@ -306,15 +318,11 @@ def calculate_fdd_async(axes, data_matrix, timestamp, db_session_maker, q_mqtt, 
 
 
 
-        # Maschera banda utile (1-95 Hz) escludendo la rete elettrica a 50 Hz.
+        # Maschera banda utile (1-95 Hz).
 
         f_peaks = freq[peaks]
 
-        mask  = ((f_peaks > FDD_FREQ_MIN_PICK)
-
-                 & (f_peaks < FDD_FREQ_MAX_PICK)
-
-                 & ~((f_peaks >= MAINS_BAND[0]) & (f_peaks <= MAINS_BAND[1])))
+        mask  = (f_peaks > FDD_FREQ_MIN_PICK) & (f_peaks < FDD_FREQ_MAX_PICK)
 
         peaks = peaks[mask]
 
@@ -371,12 +379,6 @@ def calculate_fdd_async(axes, data_matrix, timestamp, db_session_maker, q_mqtt, 
             ax_cmif.plot(freq[peaks_top], sv1_dB[peaks_top], "o", mfc="none",
 
                          mec="red", ms=9, mew=2.1, label="Frequenze proprie", zorder=10)
-
-            # Banda della rete elettrica evidenziata in grigio
-
-            ax_cmif.axvspan(MAINS_BAND[0], MAINS_BAND[1], color="gray",
-
-                            alpha=0.15, label="Rete 50 Hz (esclusa)")
 
             ax_cmif.legend(loc="upper right")
 
@@ -598,7 +600,7 @@ def shm_analysis_worker(q_files, q_mqtt, stop_event, plot_dir, db_session_maker)
 
                 # con compensazione del coherent gain della finestra.
 
-                # Peak picking nella banda 1-95 Hz, esclusa la rete a 50 Hz.
+                # Peak picking nella banda strutturale 1-95 Hz.
 
                 # ------------------------------------------------------------
 
@@ -638,9 +640,7 @@ def shm_analysis_worker(q_files, q_mqtt, stop_event, plot_dir, db_session_maker)
 
                         fft_freq, amplitudes,
 
-                        band=STRUCT_BAND, mains_band=MAINS_BAND,
-
-                        n_peaks=NUM_PEAKS_REPORT,
+                        band=STRUCT_BAND, n_peaks=NUM_PEAKS_REPORT,
 
                     )
 
@@ -662,11 +662,9 @@ def shm_analysis_worker(q_files, q_mqtt, stop_event, plot_dir, db_session_maker)
 
                     else:
 
-                        # Fallback: argmax nella banda escludendo la rete
+                        # Fallback: argmax nella banda strutturale
 
-                        mask_band = ((fft_freq >= STRUCT_BAND[0]) & (fft_freq <= STRUCT_BAND[1])
-
-                                     & ~((fft_freq >= MAINS_BAND[0]) & (fft_freq <= MAINS_BAND[1])))
+                        mask_band = (fft_freq >= STRUCT_BAND[0]) & (fft_freq <= STRUCT_BAND[1])
 
                         idx_band = np.where(mask_band)[0]
 
@@ -718,10 +716,6 @@ def shm_analysis_worker(q_files, q_mqtt, stop_event, plot_dir, db_session_maker)
 
                                             fontsize=8, color='darkred')
 
-                        ax.axvspan(MAINS_BAND[0], MAINS_BAND[1], color='gray',
-
-                                   alpha=0.15, label='Rete 50 Hz')
-
                         ax.set(xlabel='Frequenza [Hz]', ylabel='|A(f)| [m/s²]',
 
                                title=f"FFT Spectrum - {sensor_axes} ({timestamp})",
@@ -744,11 +738,11 @@ def shm_analysis_worker(q_files, q_mqtt, stop_event, plot_dir, db_session_maker)
 
                 # Esecuzione PSD
 
-                # Welch con nperseg=1024 (~5.12 s a 200 Hz) -> df ~ 0.195 Hz,
+                # Welch con nperseg=WELCH_NPERSEG (stessa risoluzione della FDD).
 
-                # ~22 medie su 60 s con overlap 50%: buon compromesso
+                # A fs=200 e nperseg=2048 -> ~10.24 s, df ~ 0.098 Hz,
 
-                # risoluzione/varianza per modi a >1 Hz di distanza.
+                # ~10 medie su 60 s con overlap 50%.
 
                 # ------------------------------------------------------------
 
@@ -756,9 +750,9 @@ def shm_analysis_worker(q_files, q_mqtt, stop_event, plot_dir, db_session_maker)
 
                     sig_proc = _preprocess_signal(current_buffer, fs, hp_cutoff=PREPROC_HP_CUTOFF)
 
-                    nperseg = min(len(sig_proc), 1024)
+                    nperseg = min(len(sig_proc), WELCH_NPERSEG)
 
-                    noverlap = nperseg // 2
+                    noverlap = int(nperseg * WELCH_OVERLAP_RATIO)
 
                     f_psd, p_mag = signal.welch(
 
@@ -776,9 +770,7 @@ def shm_analysis_worker(q_files, q_mqtt, stop_event, plot_dir, db_session_maker)
 
                         f_psd, p_mag,
 
-                        band=STRUCT_BAND, mains_band=MAINS_BAND,
-
-                        n_peaks=NUM_PEAKS_REPORT,
+                        band=STRUCT_BAND, n_peaks=NUM_PEAKS_REPORT,
 
                     )
 
@@ -798,9 +790,7 @@ def shm_analysis_worker(q_files, q_mqtt, stop_event, plot_dir, db_session_maker)
 
                     else:
 
-                        mask_band = ((f_psd >= STRUCT_BAND[0]) & (f_psd <= STRUCT_BAND[1])
-
-                                     & ~((f_psd >= MAINS_BAND[0]) & (f_psd <= MAINS_BAND[1])))
+                        mask_band = (f_psd >= STRUCT_BAND[0]) & (f_psd <= STRUCT_BAND[1])
 
                         idx_band = np.where(mask_band)[0]
 
@@ -851,10 +841,6 @@ def shm_analysis_worker(q_files, q_mqtt, stop_event, plot_dir, db_session_maker)
                                             xytext=(3, 6), textcoords='offset points',
 
                                             fontsize=8, color='black')
-
-                        ax.axvspan(MAINS_BAND[0], MAINS_BAND[1], color='gray',
-
-                                   alpha=0.15, label='Rete 50 Hz')
 
                         ax.set(xlabel='Frequenza [Hz]', ylabel='PSD [(m/s²)²/Hz]',
 
