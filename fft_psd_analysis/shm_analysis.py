@@ -88,15 +88,13 @@ FDD_SENSORS = ['A1', 'A2', 'A3', 'A4', 'A5', 'A6']
 
 # Setup: trave 3.5 m, 6 accelerometri triassiali, fs=200 Hz (Nyquist=100 Hz).
 
-# Prima frequenza propria attesa ~21 Hz, modi successivi > 30 Hz.
+# Prima frequenza propria attesa ~21 Hz, frequenze successive > 30 Hz.
 
 # Banda di interesse strutturale: 1-95 Hz (esclude DC/drift e bordo Nyquist).
 
 PREPROC_HP_CUTOFF   = 1.0          # Filtro passa-alto Butter ord. 4 (rimuove drift termico/gravita')
 
 STRUCT_BAND         = (1.0, 95.0)  # Banda di ricerca picchi per FFT/PSD/FDD [Hz]
-
-NUM_PEAKS_REPORT    = 6            # Numero di modi candidati da loggare per FFT/PSD
 
 
 
@@ -148,13 +146,13 @@ FDD_NXSEG          = WELCH_NPERSEG
 
 FDD_FREQ_MIN_PICK  = STRUCT_BAND[0]   # Esclude DC e drift bassissimi
 
-FDD_FREQ_MAX_PICK  = STRUCT_BAND[1]   # Estende la ricerca fino a quasi-Nyquist (modi > 30 Hz)
+FDD_FREQ_MAX_PICK  = STRUCT_BAND[1]   # Estende la ricerca fino a quasi-Nyquist
 
 FDD_FREQ_MAX_PLOT  = 100.0            # Zoom asse x grafici [Hz]
 
-FDD_NUM_MODES      = 6                # 1o modo ~21 Hz + modi flessionali/torsionali successivi
+FDD_NUM_MODES      = 6                # Numero di frequenze proprie da estrarre
 
-FDD_PROMINENCE_DB  = 5.0              # Selettivita' picchi sigma_1 (era 3, troppo permissivo)
+FDD_PROMINENCE_DB  = 5.0              # Prominenza min dei picchi su sigma_1 in dB
 
 FDD_PEAK_DIST_HZ   = 0.5              # Distanza minima tra picchi [Hz]
 
@@ -178,7 +176,7 @@ def _preprocess_signal(x, fs, hp_cutoff=PREPROC_HP_CUTOFF):
 
     Rimuove offset DC (gravita' per asse verticale), drift termico e
 
-    componenti sub-Hz che mascherano i modi strutturali.
+    componenti sub-Hz che mascherano le frequenze proprie strutturali.
 
     Funziona sia su segnali 1D (FFT/PSD per canale) che su matrici 2D
 
@@ -204,7 +202,7 @@ def _preprocess_signal(x, fs, hp_cutoff=PREPROC_HP_CUTOFF):
 
 def _find_structural_peaks(freq, magnitude, band=STRUCT_BAND,
 
-                           n_peaks=NUM_PEAKS_REPORT,
+                           n_peaks=6,
 
                            prominence_ratio=0.02):
 
@@ -318,11 +316,9 @@ def calculate_fdd_async(axes, data_matrix, timestamp, db_session_maker, q_mqtt, 
 
 
 
-        # Maschera banda utile (1-95 Hz).
+        # Maschera banda utile
 
-        f_peaks = freq[peaks]
-
-        mask  = (f_peaks > FDD_FREQ_MIN_PICK) & (f_peaks < FDD_FREQ_MAX_PICK)
+        mask  = (freq[peaks] > FDD_FREQ_MIN_PICK) & (freq[peaks] < FDD_FREQ_MAX_PICK)
 
         peaks = peaks[mask]
 
@@ -334,9 +330,7 @@ def calculate_fdd_async(axes, data_matrix, timestamp, db_session_maker, q_mqtt, 
 
             logger.warning(f"FDD asse {axes}: nessun picco identificato nella banda "
 
-                           f"[{FDD_FREQ_MIN_PICK}-{FDD_FREQ_MAX_PICK}] Hz "
-
-                           f"(prominenza min {FDD_PROMINENCE_DB} dB)")
+                           f"[{FDD_FREQ_MIN_PICK}-{FDD_FREQ_MAX_PICK}] Hz")
 
             return
 
@@ -592,17 +586,7 @@ def shm_analysis_worker(q_files, q_mqtt, stop_event, plot_dir, db_session_maker)
 
 
 
-                # ------------------------------------------------------------
-
                 # Esecuzione FFT
-
-                # Pre-processing + finestra di Hann + ampiezza single-sided
-
-                # con compensazione del coherent gain della finestra.
-
-                # Peak picking nella banda strutturale 1-95 Hz.
-
-                # ------------------------------------------------------------
 
                 if ENABLE_FFT and is_dynamic:
 
@@ -634,19 +618,13 @@ def shm_analysis_worker(q_files, q_mqtt, stop_event, plot_dir, db_session_maker)
 
 
 
-                    # Peak picking strutturale (multi-modo)
+                    # Picco dominante nella banda strutturale
 
                     peaks_f, peaks_a = _find_structural_peaks(
 
-                        fft_freq, amplitudes,
-
-                        band=STRUCT_BAND, n_peaks=NUM_PEAKS_REPORT,
+                        fft_freq, amplitudes, band=STRUCT_BAND,
 
                     )
-
-
-
-                    # Picco dominante (per il record DB esistente)
 
                     if peaks_f.size > 0:
 
@@ -656,13 +634,7 @@ def shm_analysis_worker(q_files, q_mqtt, stop_event, plot_dir, db_session_maker)
 
                         peak_amp  = float(peaks_a[idx_dom])
 
-                        modes_str = ", ".join([f"{f:.2f} Hz" for f in peaks_f])
-
-                        logger.info(f"FFT {sensor_axes} ({timestamp}) - modi candidati: [{modes_str}]")
-
                     else:
-
-                        # Fallback: argmax nella banda strutturale
 
                         mask_band = (fft_freq >= STRUCT_BAND[0]) & (fft_freq <= STRUCT_BAND[1])
 
@@ -673,10 +645,6 @@ def shm_analysis_worker(q_files, q_mqtt, stop_event, plot_dir, db_session_maker)
                         peak_freq = float(fft_freq[p_idx])
 
                         peak_amp  = float(amplitudes[p_idx])
-
-                        logger.warning(f"FFT {sensor_axes} ({timestamp}): nessun picco identificato, "
-
-                                       f"uso argmax {peak_freq:.2f} Hz")
 
 
 
@@ -696,55 +664,21 @@ def shm_analysis_worker(q_files, q_mqtt, stop_event, plot_dir, db_session_maker)
 
                         ensure_dir(s_dir)
 
-                        fig, ax = plt.subplots(figsize=(11, 4.5))
+                        plt.figure(figsize=(10, 4))
 
-                        ax.semilogy(fft_freq, amplitudes, color='steelblue', lw=0.7)
+                        plt.plot(fft_freq, amplitudes, color='blue')
 
-                        if peaks_f.size:
+                        plt.title(f"FFT Spectrum - {sensor_name} ({timestamp})")
 
-                            ax.plot(peaks_f, peaks_a, 'rv', ms=8,
+                        plt.grid(True)
 
-                                    label=f"Modi candidati ({peaks_f.size})", zorder=5)
+                        plt.savefig(os.path.join(s_dir, f"{timestamp}_fft_{ANALYSIS_INTERVAL_SEC}s.png"))
 
-                            for f, a in zip(peaks_f, peaks_a):
-
-                                ax.axvline(f, color='red', alpha=0.2, ls='--')
-
-                                ax.annotate(f"{f:.2f} Hz", xy=(f, a),
-
-                                            xytext=(3, 6), textcoords='offset points',
-
-                                            fontsize=8, color='darkred')
-
-                        ax.set(xlabel='Frequenza [Hz]', ylabel='|A(f)| [m/s²]',
-
-                               title=f"FFT Spectrum - {sensor_axes} ({timestamp})",
-
-                               xlim=(0, fs / 2))
-
-                        ax.grid(True, which='both', alpha=0.3)
-
-                        ax.legend(loc='upper right', fontsize=9)
-
-                        fig.tight_layout()
-
-                        fig.savefig(os.path.join(s_dir, f"{timestamp}_fft_{ANALYSIS_INTERVAL_SEC}s.png"), dpi=110)
-
-                        plt.close(fig)
+                        plt.close()
 
 
-
-                # ------------------------------------------------------------
 
                 # Esecuzione PSD
-
-                # Welch con nperseg=WELCH_NPERSEG (stessa risoluzione della FDD).
-
-                # A fs=200 e nperseg=2048 -> ~10.24 s, df ~ 0.098 Hz,
-
-                # ~10 medie su 60 s con overlap 50%.
-
-                # ------------------------------------------------------------
 
                 if ENABLE_PSD and is_dynamic:
 
@@ -766,15 +700,13 @@ def shm_analysis_worker(q_files, q_mqtt, stop_event, plot_dir, db_session_maker)
 
 
 
+                    # Picco dominante nella banda strutturale
+
                     peaks_f, peaks_p = _find_structural_peaks(
 
-                        f_psd, p_mag,
-
-                        band=STRUCT_BAND, n_peaks=NUM_PEAKS_REPORT,
+                        f_psd, p_mag, band=STRUCT_BAND,
 
                     )
-
-
 
                     if peaks_f.size > 0:
 
@@ -783,10 +715,6 @@ def shm_analysis_worker(q_files, q_mqtt, stop_event, plot_dir, db_session_maker)
                         peak_freq = float(peaks_f[idx_dom])
 
                         peak_psd  = float(peaks_p[idx_dom])
-
-                        modes_str = ", ".join([f"{f:.2f} Hz" for f in peaks_f])
-
-                        logger.info(f"PSD {sensor_axes} ({timestamp}) - modi candidati: [{modes_str}]")
 
                     else:
 
@@ -799,10 +727,6 @@ def shm_analysis_worker(q_files, q_mqtt, stop_event, plot_dir, db_session_maker)
                         peak_freq = float(f_psd[p_idx])
 
                         peak_psd  = float(p_mag[p_idx])
-
-                        logger.warning(f"PSD {sensor_axes} ({timestamp}): nessun picco identificato, "
-
-                                       f"uso argmax {peak_freq:.2f} Hz")
 
 
 
@@ -822,41 +746,17 @@ def shm_analysis_worker(q_files, q_mqtt, stop_event, plot_dir, db_session_maker)
 
                         ensure_dir(s_dir)
 
-                        fig, ax = plt.subplots(figsize=(11, 4.5))
+                        plt.figure(figsize=(10, 4))
 
-                        ax.semilogy(f_psd, p_mag, color='darkred', lw=0.8)
+                        plt.semilogy(f_psd, p_mag, color='red')
 
-                        if peaks_f.size:
+                        plt.title(f"PSD - {sensor_name} ({timestamp})")
 
-                            ax.plot(peaks_f, peaks_p, 'kv', ms=8,
+                        plt.grid(True, which='both')
 
-                                    label=f"Modi candidati ({peaks_f.size})", zorder=5)
+                        plt.savefig(os.path.join(s_dir, f"{timestamp}_psd_{ANALYSIS_INTERVAL_SEC}s.png"))
 
-                            for f, p in zip(peaks_f, peaks_p):
-
-                                ax.axvline(f, color='black', alpha=0.25, ls='--')
-
-                                ax.annotate(f"{f:.2f} Hz", xy=(f, p),
-
-                                            xytext=(3, 6), textcoords='offset points',
-
-                                            fontsize=8, color='black')
-
-                        ax.set(xlabel='Frequenza [Hz]', ylabel='PSD [(m/s²)²/Hz]',
-
-                               title=f"PSD (Welch) - {sensor_axes} ({timestamp})",
-
-                               xlim=(0, fs / 2))
-
-                        ax.grid(True, which='both', alpha=0.3)
-
-                        ax.legend(loc='upper right', fontsize=9)
-
-                        fig.tight_layout()
-
-                        fig.savefig(os.path.join(s_dir, f"{timestamp}_psd_{ANALYSIS_INTERVAL_SEC}s.png"), dpi=110)
-
-                        plt.close(fig)
+                        plt.close()
 
 
 
