@@ -92,8 +92,6 @@ FDD_SENSORS = ['A1', 'A2', 'A3', 'A4', 'A5', 'A6']
 
 # Banda di interesse strutturale: 1-95 Hz (esclude DC/drift e bordo Nyquist).
 
-PREPROC_HP_CUTOFF   = 1.0          # Filtro passa-alto Butter ord. 4 (rimuove drift termico/gravita')
-
 STRUCT_BAND         = (1.0, 95.0)  # Banda di ricerca picchi per FFT/PSD/FDD [Hz]
 
 
@@ -168,17 +166,11 @@ FDD_DF_MPE         = 0.2              # Banda +/- DF per fdd.mpe (Hz)
 
 # ==========================================
 
-def _preprocess_signal(x, fs, hp_cutoff=PREPROC_HP_CUTOFF):
+def _preprocess_signal(x):
 
-    """Pre-processing classico: detrend lineare + filtro passa-alto.
+    """Pre-processing classico: detrend lineare (rimuove media + drift).
 
 
-
-    1) detrend rimuove media e trend lineare (DC bias + drift).
-
-    2) Butterworth ord. 4 a 1 Hz, applicato in zero-phase con sosfiltfilt,
-
-       toglie le componenti sub-Hz residue senza distorcere fase/ampiezza.
 
     Accetta segnali 1D oppure matrici 2D (n_campioni, n_sensori).
 
@@ -186,15 +178,7 @@ def _preprocess_signal(x, fs, hp_cutoff=PREPROC_HP_CUTOFF):
 
     x = np.asarray(x, dtype=float)
 
-    x = signal.detrend(x, axis=0, type="linear")
-
-    if hp_cutoff and hp_cutoff > 0:
-
-        sos = signal.butter(4, hp_cutoff / (fs / 2.0), btype="high", output="sos")
-
-        x = signal.sosfiltfilt(sos, x, axis=0)
-
-    return x
+    return signal.detrend(x, axis=0, type="linear")
 
 
 
@@ -274,9 +258,9 @@ def calculate_fdd_async(axes, data_matrix, timestamp, db_session_maker, q_mqtt, 
 
     try:
 
-        # 1. Pre-processing classico: detrend lineare + passa-alto a 1 Hz
+        # 1. Pre-processing classico: detrend lineare (rimuove media + drift)
 
-        data = _preprocess_signal(data_matrix, FS_ACCEL, hp_cutoff=PREPROC_HP_CUTOFF)
+        data = _preprocess_signal(data_matrix)
 
 
 
@@ -586,9 +570,9 @@ def shm_analysis_worker(q_files, q_mqtt, stop_event, plot_dir, db_session_maker)
 
                 if ENABLE_FFT and is_dynamic:
 
-                    # Pre-processing classico: detrend lineare + passa-alto a 1 Hz
+                    # Pre-processing classico: detrend lineare
 
-                    sig_proc = _preprocess_signal(current_buffer, fs, hp_cutoff=PREPROC_HP_CUTOFF)
+                    sig_proc = _preprocess_signal(current_buffer)
 
 
 
@@ -678,7 +662,7 @@ def shm_analysis_worker(q_files, q_mqtt, stop_event, plot_dir, db_session_maker)
 
                 if ENABLE_PSD and is_dynamic:
 
-                    sig_proc = _preprocess_signal(current_buffer, fs, hp_cutoff=PREPROC_HP_CUTOFF)
+                    sig_proc = _preprocess_signal(current_buffer)
 
                     nperseg = min(len(sig_proc), WELCH_NPERSEG)
 
