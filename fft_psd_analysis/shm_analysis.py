@@ -170,17 +170,17 @@ FDD_DF_MPE         = 0.2              # Banda +/- DF per fdd.mpe (Hz)
 
 def _preprocess_signal(x, fs, hp_cutoff=PREPROC_HP_CUTOFF):
 
-    """Detrend lineare + filtro Butter passa-alto zero-phase.
+    """Pre-processing classico: detrend lineare + filtro passa-alto.
 
 
 
-    Rimuove offset DC (gravita' per asse verticale), drift termico e
+    1) detrend rimuove media e trend lineare (DC bias + drift).
 
-    componenti sub-Hz che mascherano le frequenze proprie strutturali.
+    2) Butterworth ord. 4 a 1 Hz, applicato in zero-phase con sosfiltfilt,
 
-    Funziona sia su segnali 1D (FFT/PSD per canale) che su matrici 2D
+       toglie le componenti sub-Hz residue senza distorcere fase/ampiezza.
 
-    di forma (n_campioni, n_sensori) (FDD).
+    Accetta segnali 1D oppure matrici 2D (n_campioni, n_sensori).
 
     """
 
@@ -274,11 +274,7 @@ def calculate_fdd_async(axes, data_matrix, timestamp, db_session_maker, q_mqtt, 
 
     try:
 
-        # 1. Pre-processing: detrend lineare + passa-alto a 1 Hz.
-
-        #    Rimuove offset DC (gravita'), drift termico e componenti sub-Hz
-
-        #    che falsano la SVD della CSD a basse frequenze.
+        # 1. Pre-processing classico: detrend lineare + passa-alto a 1 Hz
 
         data = _preprocess_signal(data_matrix, FS_ACCEL, hp_cutoff=PREPROC_HP_CUTOFF)
 
@@ -590,7 +586,7 @@ def shm_analysis_worker(q_files, q_mqtt, stop_event, plot_dir, db_session_maker)
 
                 if ENABLE_FFT and is_dynamic:
 
-                    # Pre-processing: detrend lineare + passa-alto a 1 Hz
+                    # Pre-processing classico: detrend lineare + passa-alto a 1 Hz
 
                     sig_proc = _preprocess_signal(current_buffer, fs, hp_cutoff=PREPROC_HP_CUTOFF)
 
