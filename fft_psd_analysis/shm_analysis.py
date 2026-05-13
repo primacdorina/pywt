@@ -84,31 +84,17 @@ FDD_SENSORS = ['A1', 'A2', 'A3', 'A4', 'A5', 'A6']
 
 
 
-# --- Pre-processing comune (FFT/PSD/FDD) -------------------------------------
+# --- Parametri di analisi (FFT / PSD / FDD) ----------------------------------
 
-# Setup: trave 3.5 m, 6 accelerometri triassiali, fs=200 Hz (Nyquist=100 Hz).
+# Banda strutturale: copre i modi attesi (~21, 42, 60 Hz) con margine fino a ~80 Hz.
 
-# Prima frequenza propria attesa ~21 Hz, frequenze successive > 30 Hz.
-
-# Banda di interesse strutturale: 1-95 Hz (esclude DC/drift e bordo Nyquist).
-
-STRUCT_BAND         = (1.0, 95.0)  # Banda di ricerca picchi per FFT/PSD/FDD [Hz]
+STRUCT_BAND         = (1.0, 90.0)  # Banda ricerca picchi [Hz]
 
 
 
-# --- Parametri Welch comuni a PSD (per-canale) e FDD (multivariato) ----------
+# Lunghezza segmento Welch comune a PSD e FDD -> stessa df (= fs/nperseg).
 
-# Lo stesso nperseg in entrambi garantisce la stessa risoluzione frequenziale
-
-# df = fs / nperseg, quindi PSD per-canale e CSD/SVD della FDD sono confrontabili
-
-# bin per bin sull'asse delle frequenze.
-
-# A fs=200 Hz: nperseg=2048 -> segmento ~10.24 s, df ~ 0.098 Hz.
-
-#   PSD su 60 s con 50% overlap  -> ~10 medie
-
-#   FDD su 600 s con 50% overlap -> ~115 medie (alta stabilita')
+# A fs=200 Hz, nperseg=2048 -> df ~= 0.098 Hz.
 
 WELCH_NPERSEG       = 2048
 
@@ -136,25 +122,23 @@ seconds_since_last_fdd = 0
 
 
 
-# Parametri per Analisi Modale (FDD via pyoma2)
+# Parametri Analisi Modale (FDD via pyoma2)
 
-# nxseg uguale a WELCH_NPERSEG -> stessa df di PSD per confronto diretto.
+FDD_NXSEG          = WELCH_NPERSEG    # stessa df di PSD
 
-FDD_NXSEG          = WELCH_NPERSEG
+FDD_FREQ_MIN_PICK  = STRUCT_BAND[0]   # banda min ricerca picchi [Hz]
 
-FDD_FREQ_MIN_PICK  = STRUCT_BAND[0]   # Esclude DC e drift bassissimi
+FDD_FREQ_MAX_PICK  = STRUCT_BAND[1]   # banda max ricerca picchi [Hz]
 
-FDD_FREQ_MAX_PICK  = STRUCT_BAND[1]   # Estende la ricerca fino a quasi-Nyquist
+FDD_FREQ_MAX_PLOT  = 100.0            # zoom asse x plot [Hz]
 
-FDD_FREQ_MAX_PLOT  = 100.0            # Zoom asse x grafici [Hz]
+FDD_NUM_MODES      = 6                # n. frequenze proprie da estrarre
 
-FDD_NUM_MODES      = 6                # Numero di frequenze proprie da estrarre
+FDD_PROMINENCE_DB  = 5.0              # prominenza min picchi su sigma_1 [dB]
 
-FDD_PROMINENCE_DB  = 5.0              # Prominenza min dei picchi su sigma_1 in dB
+FDD_PEAK_DIST_HZ   = 1.0              # distanza min tra picchi [Hz]
 
-FDD_PEAK_DIST_HZ   = 0.5              # Distanza minima tra picchi [Hz]
-
-FDD_DF_MPE         = 0.2              # Banda +/- DF per fdd.mpe (Hz)
+FDD_DF_MPE         = 0.3              # tolleranza mpe (+/- DF) [Hz]
 
 
 
@@ -184,55 +168,17 @@ def _preprocess_signal(x):
 
 
 
-def _find_structural_peaks(freq, magnitude, band=STRUCT_BAND,
+def _dominant_peak_in_band(freq, magnitude, band=STRUCT_BAND):
 
-                           n_peaks=6,
+    """argmax di magnitude limitato alla banda [fmin, fmax]."""
 
-                           prominence_ratio=0.02):
+    mask = (freq >= band[0]) & (freq <= band[1])
 
-    """Peak picking nella banda strutturale.
+    idx_band = np.where(mask)[0]
 
+    p_idx = idx_band[np.argmax(magnitude[idx_band])]
 
-
-    Ordina i picchi per prominenza decrescente, restituisce i primi n_peaks
-
-    riordinati per frequenza crescente. Soglia di prominenza relativa al
-
-    range del segnale (robusta a livelli di ampiezza diversi).
-
-    """
-
-    fmin, fmax = band
-
-    mask = (freq >= fmin) & (freq <= fmax)
-
-    f_band = freq[mask]
-
-    m_band = magnitude[mask]
-
-    if f_band.size == 0:
-
-        return np.array([]), np.array([])
-
-    span = float(m_band.max() - m_band.min())
-
-    prom = max(span * prominence_ratio, 1e-20)
-
-    df = f_band[1] - f_band[0] if f_band.size > 1 else 1.0
-
-    dist = max(1, int(0.3 / df))  # almeno 0.3 Hz tra due picchi distinti
-
-    peaks, props = find_peaks(m_band, prominence=prom, distance=dist)
-
-    if peaks.size == 0:
-
-        return np.array([]), np.array([])
-
-    order = np.argsort(props["prominences"])[-min(n_peaks, peaks.size):]
-
-    peaks_top = np.sort(peaks[order])
-
-    return f_band[peaks_top], m_band[peaks_top]
+    return int(p_idx)
 
 
 
@@ -570,61 +516,37 @@ def shm_analysis_worker(q_files, q_mqtt, stop_event, plot_dir, db_session_maker)
 
                 if ENABLE_FFT and is_dynamic:
 
-                    # Pre-processing classico: detrend lineare
+                    # Pre-processing: detrend lineare
 
                     sig_proc = _preprocess_signal(current_buffer)
 
 
 
+                    # FFT con finestra di Hann + ampiezza single-sided
+
                     n = len(sig_proc)
 
                     win = signal.windows.hann(n)
 
-                    cg = win.mean()  # coherent gain della finestra di Hann (~0.5)
+                    cg = win.mean()                            # coherent gain Hann
 
                     fft_vals = np.fft.rfft(sig_proc * win)
 
                     fft_freq = np.fft.rfftfreq(n, d=1 / fs)
 
-                    # Ampiezza a singolo lato in unita' fisiche (m/s^2)
-
                     amplitudes = np.abs(fft_vals) / (n * cg) * 2.0
 
-                    amplitudes[0] /= 2.0           # bin DC non si raddoppia
+                    amplitudes[0] /= 2.0                       # bin DC non raddoppiato
 
                     if n % 2 == 0:
 
-                        amplitudes[-1] /= 2.0      # bin Nyquist non si raddoppia
+                        amplitudes[-1] /= 2.0                  # bin Nyquist non raddoppiato
 
 
 
                     # Picco dominante nella banda strutturale
 
-                    peaks_f, peaks_a = _find_structural_peaks(
-
-                        fft_freq, amplitudes, band=STRUCT_BAND,
-
-                    )
-
-                    if peaks_f.size > 0:
-
-                        idx_dom = int(np.argmax(peaks_a))
-
-                        peak_freq = float(peaks_f[idx_dom])
-
-                        peak_amp  = float(peaks_a[idx_dom])
-
-                    else:
-
-                        mask_band = (fft_freq >= STRUCT_BAND[0]) & (fft_freq <= STRUCT_BAND[1])
-
-                        idx_band = np.where(mask_band)[0]
-
-                        p_idx = idx_band[np.argmax(amplitudes[idx_band])]
-
-                        peak_freq = float(fft_freq[p_idx])
-
-                        peak_amp  = float(amplitudes[p_idx])
+                    p_idx = _dominant_peak_in_band(fft_freq, amplitudes, STRUCT_BAND)
 
 
 
@@ -632,7 +554,9 @@ def shm_analysis_worker(q_files, q_mqtt, stop_event, plot_dir, db_session_maker)
 
                         sensor_name=sensor_name, timestamp=timestamp,
 
-                        peak_freq=peak_freq, peak_amplitude=peak_amp
+                        peak_freq=float(fft_freq[p_idx]),
+
+                        peak_amplitude=float(amplitudes[p_idx])
 
                     ))
 
@@ -662,7 +586,13 @@ def shm_analysis_worker(q_files, q_mqtt, stop_event, plot_dir, db_session_maker)
 
                 if ENABLE_PSD and is_dynamic:
 
+                    # Pre-processing: detrend lineare
+
                     sig_proc = _preprocess_signal(current_buffer)
+
+
+
+                    # Welch PSD (stesso nperseg della FDD -> spettri confrontabili)
 
                     nperseg = min(len(sig_proc), WELCH_NPERSEG)
 
@@ -682,31 +612,7 @@ def shm_analysis_worker(q_files, q_mqtt, stop_event, plot_dir, db_session_maker)
 
                     # Picco dominante nella banda strutturale
 
-                    peaks_f, peaks_p = _find_structural_peaks(
-
-                        f_psd, p_mag, band=STRUCT_BAND,
-
-                    )
-
-                    if peaks_f.size > 0:
-
-                        idx_dom = int(np.argmax(peaks_p))
-
-                        peak_freq = float(peaks_f[idx_dom])
-
-                        peak_psd  = float(peaks_p[idx_dom])
-
-                    else:
-
-                        mask_band = (f_psd >= STRUCT_BAND[0]) & (f_psd <= STRUCT_BAND[1])
-
-                        idx_band = np.where(mask_band)[0]
-
-                        p_idx = idx_band[np.argmax(p_mag[idx_band])]
-
-                        peak_freq = float(f_psd[p_idx])
-
-                        peak_psd  = float(p_mag[p_idx])
+                    p_idx = _dominant_peak_in_band(f_psd, p_mag, STRUCT_BAND)
 
 
 
@@ -714,7 +620,9 @@ def shm_analysis_worker(q_files, q_mqtt, stop_event, plot_dir, db_session_maker)
 
                         sensor_name=sensor_name, timestamp=timestamp,
 
-                        peak_freq=peak_freq, peak_psd=peak_psd
+                        peak_freq=float(f_psd[p_idx]),
+
+                        peak_psd=float(p_mag[p_idx])
 
                     ))
 
